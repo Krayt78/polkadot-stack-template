@@ -285,6 +285,7 @@ export default function ContractProofOfExistencePage({
 					abi: proofOfExistenceAbi,
 					functionName: "createClaim",
 					args: [fileHash],
+					onProgress: (stage) => setTxStatus(stage),
 				});
 				if (!result.ok) {
 					setTxStatus(`Error: ${formatDispatchError(result.dispatchError)}`);
@@ -341,6 +342,7 @@ export default function ContractProofOfExistencePage({
 					abi: proofOfExistenceAbi,
 					functionName: "revokeClaim",
 					args: [documentHash],
+					onProgress: (stage) => setTxStatus(stage),
 				});
 				if (!result.ok) {
 					setTxStatus(`Error: ${formatDispatchError(result.dispatchError)}`);

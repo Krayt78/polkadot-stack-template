@@ -12,6 +12,8 @@ export type ReviveCallParams = {
 	functionName: string;
 	args: readonly unknown[];
 	value?: bigint;
+	/** Optional progress callback so the UI can show "broadcast", "in block", "finalized". */
+	onProgress?: (stage: string) => void;
 };
 
 function h160ToBytes(addr: string): FixedSizeBinary<20> {
@@ -35,18 +37,63 @@ export async function mapAccountIfNeeded(
 	wsUrl: string,
 	signer: PolkadotSigner,
 	originSs58: string,
+	onProgress?: (stage: string) => void,
 ): Promise<FixedSizeBinary<20>> {
 	const client = getClient(wsUrl);
 	const api = client.getTypedApi(stack_template);
 	const mappedH160 = await api.apis.ReviveApi.address(originSs58);
 	const existing = await api.query.Revive.OriginalAccount.getValue(mappedH160);
-	if (existing) return mappedH160;
+	if (existing) {
+		onProgress?.("Account already mapped, skipping registration");
+		return mappedH160;
+	}
+	onProgress?.("Mapping account (one-time)…");
 	const tx = api.tx.Revive.map_account();
-	const result = await tx.signAndSubmit(signer);
+	const result = await watchSubmit(tx, signer, (s) => onProgress?.(`map_account: ${s}`));
 	if (!result.ok) {
 		throw new Error(`Revive.map_account failed: ${JSON.stringify(result.dispatchError)}`);
 	}
 	return mappedH160;
+}
+
+/**
+ * Submit a tx and report progress (broadcasted → in best block → finalized) to
+ * the UI. Resolves when the tx is in the best block (~6s), without waiting for
+ * the full finalization window (~60s on Paseo). Returns the same shape as
+ * signAndSubmit so callers can keep their `result.ok` checks.
+ */
+async function watchSubmit(
+	tx: { signSubmitAndWatch: ReturnType<typeof Object> } & {
+		// eslint-disable-next-line @typescript-eslint/no-explicit-any
+		signSubmitAndWatch: (signer: PolkadotSigner) => any;
+	},
+	signer: PolkadotSigner,
+	onStage: (stage: string) => void,
+	// eslint-disable-next-line @typescript-eslint/no-explicit-any
+): Promise<any> {
+	return new Promise((resolve, reject) => {
+		const sub = tx.signSubmitAndWatch(signer).subscribe({
+			// eslint-disable-next-line @typescript-eslint/no-explicit-any
+			next: (e: any) => {
+				if (e.type === "signed") onStage("signed by wallet");
+				else if (e.type === "broadcasted") onStage("broadcasted to network");
+				else if (e.type === "txBestBlocksState") {
+					if (e.found) {
+						onStage(`included in best block ${e.block.hash.slice(0, 10)}…`);
+						sub.unsubscribe();
+						resolve({
+							ok: e.ok,
+							txHash: e.txHash,
+							dispatchError: e.dispatchError,
+						});
+					} else {
+						onStage("waiting for inclusion…");
+					}
+				}
+			},
+			error: (err: unknown) => reject(err),
+		});
+	});
 }
 
 /**
@@ -64,10 +111,11 @@ export async function mapAccountIfNeeded(
  *   5. signAndSubmit with the provided substrate signer.
  */
 export async function reviveCall(params: ReviveCallParams) {
-	const { wsUrl, signer, originSs58, contractAddress, abi, functionName, args } = params;
+	const { wsUrl, signer, originSs58, contractAddress, abi, functionName, args, onProgress } =
+		params;
 	const value = params.value ?? 0n;
 
-	await mapAccountIfNeeded(wsUrl, signer, originSs58);
+	await mapAccountIfNeeded(wsUrl, signer, originSs58, onProgress);
 
 	const callData = encodeFunctionData({
 		abi,
@@ -112,6 +160,7 @@ export async function reviveCall(params: ReviveCallParams) {
 		data,
 	});
 
-	const result = await tx.signAndSubmit(signer);
+	onProgress?.(`Submitting Revive.call (${functionName})…`);
+	const result = await watchSubmit(tx, signer, (s) => onProgress?.(`call: ${s}`));
 	return { result, dryRun };
 }
