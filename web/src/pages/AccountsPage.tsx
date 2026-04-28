@@ -10,31 +10,14 @@ import {
 	connectInjectedExtension,
 	type InjectedPolkadotAccount,
 } from "polkadot-api/pjs-signer";
-import { injectSpektrExtension, SpektrExtensionName } from "@novasamatech/product-sdk";
+import { SpektrExtensionName } from "@novasamatech/product-sdk";
 import { getSs58AddressInfo, Keccak256 } from "@polkadot-api/substrate-bindings";
 import {
 	useHostAccounts,
 	startHostPairing,
 	disconnectHostSession,
 } from "../hooks/useHostAccount";
-
-type HostEnvironment = "desktop-webview" | "web-iframe" | "standalone";
-
-function detectHostEnvironment(): HostEnvironment {
-	if (typeof window === "undefined") return "standalone";
-	// eslint-disable-next-line @typescript-eslint/no-explicit-any
-	if ((window as any).__HOST_WEBVIEW_MARK__) return "desktop-webview";
-	try {
-		if (window !== window.top) return "web-iframe";
-	} catch {
-		return "web-iframe";
-	}
-	return "standalone";
-}
-
-function isInHost(): boolean {
-	return detectHostEnvironment() !== "standalone";
-}
+import { useSpektrAccounts } from "../hooks/useSpektrAccounts";
 
 function ss58ToH160(ss58Address: string): `0x${string}` {
 	const info = getSs58AddressInfo(ss58Address);
@@ -96,15 +79,11 @@ function CopyableAddress({ label, address }: { label: string; address: string })
 
 export default function AccountsPage() {
 	const { wsUrl, connected } = useChainStore();
-	const spektrUnsubscribeRef = useRef<(() => void) | null>(null);
 	const extensionUnsubscribeRef = useRef<(() => void) | null>(null);
 	const [availableWallets, setAvailableWallets] = useState<string[]>([]);
 	const [extensionAccounts, setExtensionAccounts] = useState<InjectedPolkadotAccount[]>([]);
 	const [connectedWallet, setConnectedWallet] = useState<string | null>(null);
-	const [spektrAccounts, setSpektrAccounts] = useState<InjectedPolkadotAccount[]>([]);
-	const [spektrStatus, setSpektrStatus] = useState<
-		"detecting" | "injecting" | "connected" | "unavailable" | "failed"
-	>("detecting");
+	const { status: spektrStatus, accounts: spektrAccounts } = useSpektrAccounts();
 	const [fundStatus, setFundStatus] = useState<string | null>(null);
 	const [fundAmount, setFundAmount] = useState("10000");
 	const [accountInfos, setAccountInfos] = useState<Record<string, AccountInfo>>({});
@@ -155,55 +134,8 @@ export default function AccountsPage() {
 		fetchAccountInfos();
 	}, [fetchAccountInfos]);
 
-	// Detect host environment and inject Spektr on mount
-	useEffect(() => {
-		let cancelled = false;
-
-		async function initSpektr() {
-			if (!isInHost()) {
-				setSpektrStatus("unavailable");
-				return;
-			}
-			setSpektrStatus("injecting");
-			try {
-				let injected = false;
-				for (let i = 0; i < 10; i++) {
-					if (await injectSpektrExtension()) {
-						injected = true;
-						break;
-					}
-					if (i < 9) await new Promise((r) => setTimeout(r, 500));
-				}
-				if (!injected) {
-					setSpektrStatus("failed");
-					return;
-				}
-				const ext = await connectInjectedExtension(SpektrExtensionName);
-				if (cancelled) {
-					ext.disconnect();
-					return;
-				}
-				const accounts = ext.getAccounts();
-				setSpektrAccounts(accounts);
-				setSpektrStatus("connected");
-				spektrUnsubscribeRef.current?.();
-				spektrUnsubscribeRef.current = ext.subscribe((updated) => {
-					setSpektrAccounts(updated);
-				});
-			} catch (e) {
-				console.error("[Spektr] Init failed:", e);
-				setSpektrStatus("failed");
-			}
-		}
-
-		initSpektr();
-
-		return () => {
-			cancelled = true;
-			spektrUnsubscribeRef.current?.();
-			spektrUnsubscribeRef.current = null;
-		};
-	}, []);
+	// Spektr accounts are wired by the shared `useSpektrAccounts` hook above —
+	// no per-page init needed.
 
 	// Detect available browser extension wallets on mount
 	useEffect(() => {
@@ -240,7 +172,6 @@ export default function AccountsPage() {
 
 	useEffect(() => {
 		return () => {
-			spektrUnsubscribeRef.current?.();
 			extensionUnsubscribeRef.current?.();
 		};
 	}, []);

@@ -13,6 +13,30 @@ export const polkadotHubTestnet = defineChain({
 	},
 });
 
+/**
+ * Pick an account source for testnet deploys, in this priority:
+ *   1. MNEMONIC env var or hardhat var (Talisman / MetaMask seed phrase)
+ *   2. PRIVATE_KEY env var or hardhat var
+ *   3. Empty (deploys will fail until configured)
+ *
+ * Talisman only exports mnemonics; MNEMONIC is the recommended path. Use the
+ * default BIP44 Ethereum derivation `m/44'/60'/0'/0/0` to match Talisman's
+ * Ethereum account.
+ */
+function resolveAccounts() {
+	const mnemonic = process.env.MNEMONIC ?? vars.get("MNEMONIC", "");
+	if (mnemonic) {
+		return {
+			mnemonic,
+			path: "m/44'/60'/0'/0/0",
+			initialIndex: 0,
+			count: 1,
+		};
+	}
+	const pk = process.env.PRIVATE_KEY ?? vars.get("PRIVATE_KEY", "");
+	return [pk].filter(Boolean);
+}
+
 const config: HardhatUserConfig = {
 	solidity: "0.8.28",
 	networks: {
@@ -27,7 +51,7 @@ const config: HardhatUserConfig = {
 		polkadotTestnet: {
 			url: "https://services.polkadothub-rpc.com/testnet",
 			chainId: 420420417,
-			accounts: [process.env.PRIVATE_KEY ?? vars.get("PRIVATE_KEY", "")].filter(Boolean),
+			accounts: resolveAccounts(),
 		},
 	},
 	etherscan: {

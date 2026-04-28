@@ -16,25 +16,35 @@ import { useChainStore } from "../store/chainStore";
 import { reviveCall } from "../hooks/useReviveCall";
 import { formatDispatchError } from "../utils/format";
 import { useHostAccounts, type HostAccount } from "../hooks/useHostAccount";
+import { useSpektrAccounts } from "../hooks/useSpektrAccounts";
+import { isInHost } from "../lib/hostEnv";
+import type { InjectedPolkadotAccount } from "polkadot-api/pjs-signer";
 
 /**
  * Resolve the substrate-signing identity for the Revive::call path.
- *   - "dev:N" → the Nth hardcoded dev account (Alice/Bob/Charlie)
- *   - "host:<ss58>" → a paired PWallet session
+ *   - "spektr:<ss58>" → an account injected by the Polkadot Host shell (dot.li)
+ *   - "host:<ss58>" → a paired PWallet session over QR
+ *   - "dev:N" → the Nth hardcoded dev account (Alice/Bob/Charlie) — local-only
  */
 function pickSubstrateSigner(
 	id: string,
 	hostAccounts: HostAccount[],
+	spektrAccounts: InjectedPolkadotAccount[],
 ): { address: string; signer: import("polkadot-api").PolkadotSigner } | null {
+	if (id.startsWith("spektr:")) {
+		const ss58 = id.slice(7);
+		const acc = spektrAccounts.find((a) => a.address === ss58);
+		return acc ? { address: acc.address, signer: acc.polkadotSigner } : null;
+	}
+	if (id.startsWith("host:")) {
+		const ss58 = id.slice(5);
+		const acc = hostAccounts.find((a) => a.address === ss58);
+		return acc ? { address: acc.address, signer: acc.signer } : null;
+	}
 	if (id.startsWith("dev:")) {
 		const idx = parseInt(id.slice(4), 10);
 		const dev = devAccounts[idx];
 		return dev ? { address: dev.address, signer: dev.signer } : null;
-	}
-	if (id.startsWith("host:")) {
-		const ss58 = id.slice(5);
-		const host = hostAccounts.find((a) => a.address === ss58);
-		return host ? { address: host.address, signer: host.signer } : null;
 	}
 	return null;
 }
@@ -84,8 +94,27 @@ export default function ContractProofOfExistencePage({
 	const [uploadToIpfs, setUploadToIpfs] = useState(false);
 	const [uploadToStatementStore, setUploadToStatementStore] = useState(false);
 	const [signWithSubstrate, setSignWithSubstrate] = useState(false);
-	const [substrateAccountId, setSubstrateAccountId] = useState<string>("dev:0");
 	const hostAccounts = useHostAccounts();
+	const { accounts: spektrAccounts } = useSpektrAccounts();
+	const inHost = isInHost();
+
+	// Default substrate account: prefer Spektr (host shell), then PWallet (QR),
+	// then a dev key when running standalone.
+	const defaultAccountId =
+		spektrAccounts[0] !== undefined
+			? `spektr:${spektrAccounts[0].address}`
+			: hostAccounts[0] !== undefined
+				? `host:${hostAccounts[0].address}`
+				: "dev:0";
+	const [substrateAccountId, setSubstrateAccountId] = useState<string>(defaultAccountId);
+
+	// When the host injects/exposes its account after mount, snap the picker to
+	// it so the user doesn't have to touch the dropdown.
+	useEffect(() => {
+		if (substrateAccountId.startsWith("dev:") && spektrAccounts[0]) {
+			setSubstrateAccountId(`spektr:${spektrAccounts[0].address}`);
+		}
+	}, [spektrAccounts, substrateAccountId]);
 	const [claims, setClaims] = useState<Claim[]>([]);
 	const [txStatus, setTxStatus] = useState<string | null>(null);
 	const [loading, setLoading] = useState(false);
@@ -241,7 +270,7 @@ export default function ContractProofOfExistencePage({
 			}
 
 			if (signWithSubstrate) {
-				const sub = pickSubstrateSigner(substrateAccountId, hostAccounts);
+				const sub = pickSubstrateSigner(substrateAccountId, hostAccounts, spektrAccounts);
 				if (!sub) {
 					setTxStatus(
 						"Error: selected substrate account not available. Pair PWallet first or pick a dev account.",
@@ -299,7 +328,7 @@ export default function ContractProofOfExistencePage({
 					: "Submitting revokeClaim...",
 			);
 			if (signWithSubstrate) {
-				const sub = pickSubstrateSigner(substrateAccountId, hostAccounts);
+				const sub = pickSubstrateSigner(substrateAccountId, hostAccounts, spektrAccounts);
 				if (!sub) {
 					setTxStatus("Error: selected substrate account not available.");
 					return;
@@ -416,38 +445,79 @@ export default function ContractProofOfExistencePage({
 							</div>
 						</div>
 					</label>
-					{signWithSubstrate && (
-						<div>
-							<label className="label">Substrate signer</label>
-							<select
-								value={substrateAccountId}
-								onChange={(e) => setSubstrateAccountId(e.target.value)}
-								className="input-field w-full"
-							>
-								<optgroup label="Dev accounts">
-									{devAccounts.map((acc, i) => (
-										<option key={`dev:${i}`} value={`dev:${i}`}>
-											{acc.name} (dev sr25519)
-										</option>
-									))}
-								</optgroup>
-								{hostAccounts.length > 0 && (
-									<optgroup label="Paired PWallet sessions">
-										{hostAccounts.map((acc) => (
-											<option key={`host:${acc.address}`} value={`host:${acc.address}`}>
-												{acc.name} ({acc.address.slice(0, 8)}…{acc.address.slice(-6)})
-											</option>
-										))}
-									</optgroup>
-								)}
-							</select>
-							{hostAccounts.length === 0 && (
-								<p className="text-xs text-text-muted mt-1">
-									Pair a phone wallet on the Accounts page to add it here.
-								</p>
-							)}
-						</div>
-					)}
+					{signWithSubstrate &&
+						(() => {
+							const hasHostAccounts =
+								spektrAccounts.length > 0 || hostAccounts.length > 0;
+							// In a host shell with an injected account, just lock onto it
+							// — don't expose dev accounts as selectable options.
+							if (inHost && spektrAccounts.length > 0) {
+								const acc = spektrAccounts[0];
+								return (
+									<div className="text-sm space-y-1">
+										<div className="text-text-secondary">
+											Will sign with your Polkadot Host account
+										</div>
+										<div className="text-text-primary font-mono text-xs break-all">
+											{acc.name ? `${acc.name} — ` : ""}
+											{acc.address}
+										</div>
+									</div>
+								);
+							}
+							return (
+								<div>
+									<label className="label">Substrate signer</label>
+									<select
+										value={substrateAccountId}
+										onChange={(e) => setSubstrateAccountId(e.target.value)}
+										className="input-field w-full"
+									>
+										{spektrAccounts.length > 0 && (
+											<optgroup label="Polkadot Host">
+												{spektrAccounts.map((acc) => (
+													<option
+														key={`spektr:${acc.address}`}
+														value={`spektr:${acc.address}`}
+													>
+														{acc.name || "Host"} ({acc.address.slice(0, 8)}…
+														{acc.address.slice(-6)})
+													</option>
+												))}
+											</optgroup>
+										)}
+										{hostAccounts.length > 0 && (
+											<optgroup label="Paired PWallet sessions">
+												{hostAccounts.map((acc) => (
+													<option
+														key={`host:${acc.address}`}
+														value={`host:${acc.address}`}
+													>
+														{acc.name} ({acc.address.slice(0, 8)}…
+														{acc.address.slice(-6)})
+													</option>
+												))}
+											</optgroup>
+										)}
+										{!hasHostAccounts && (
+											<optgroup label="Dev accounts (local only)">
+												{devAccounts.map((acc, i) => (
+													<option key={`dev:${i}`} value={`dev:${i}`}>
+														{acc.name} (dev sr25519)
+													</option>
+												))}
+											</optgroup>
+										)}
+									</select>
+									{!hasHostAccounts && (
+										<p className="text-xs text-text-muted mt-1">
+											No host account detected. Connect via dot.li or pair a
+											phone wallet on the Accounts page.
+										</p>
+									)}
+								</div>
+							);
+						})()}
 				</div>
 
 				{fileHash && (
