@@ -41,8 +41,13 @@ export async function mapAccountIfNeeded(
 ): Promise<FixedSizeBinary<20>> {
 	const client = getClient(wsUrl);
 	const api = client.getTypedApi(stack_template);
-	const mappedH160 = await api.apis.ReviveApi.address(originSs58);
-	const existing = await api.query.Revive.OriginalAccount.getValue(mappedH160);
+	// Read at "best" block — finalization on Paseo is ~30s, and our
+	// signSubmitAndWatch resolves at best-block inclusion. Querying
+	// finalized state would falsely report the account as still unmapped.
+	const mappedH160 = await api.apis.ReviveApi.address(originSs58, { at: "best" });
+	const existing = await api.query.Revive.OriginalAccount.getValue(mappedH160, {
+		at: "best",
+	});
 	if (existing) {
 		onProgress?.("Account already mapped, skipping registration");
 		return mappedH160;
@@ -51,9 +56,28 @@ export async function mapAccountIfNeeded(
 	const tx = api.tx.Revive.map_account();
 	const result = await watchSubmit(tx, signer, (s) => onProgress?.(`map_account: ${s}`));
 	if (!result.ok) {
-		throw new Error(`Revive.map_account failed: ${JSON.stringify(result.dispatchError)}`);
+		const err = result.dispatchError;
+		// Already-mapped is fine — could happen if a prior attempt's effect
+		// landed but our pre-check read stale state.
+		const alreadyMapped =
+			err?.type === "Module" &&
+			err?.value?.type === "Revive" &&
+			err?.value?.value?.type === "AccountAlreadyMapped";
+		if (!alreadyMapped) {
+			throw new Error(`Revive.map_account failed: ${JSON.stringify(err)}`);
+		}
 	}
-	return mappedH160;
+	// Confirm the mapping is visible at "best" before returning. Map_account
+	// landed in the best block, but a small propagation window can still trip
+	// the next runtime API call.
+	for (let i = 0; i < 6; i++) {
+		const seen = await api.query.Revive.OriginalAccount.getValue(mappedH160, {
+			at: "best",
+		});
+		if (seen) return mappedH160;
+		await new Promise((r) => setTimeout(r, 1000));
+	}
+	throw new Error("Revive.map_account: mapping did not appear in storage within 6s");
 }
 
 /**
@@ -129,6 +153,7 @@ export async function reviveCall(params: ReviveCallParams) {
 	const api = client.getTypedApi(stack_template);
 
 	// Dry-run: estimate gas + storage deposit, catch reverts early.
+	// Run at "best" block so the just-applied map_account is visible.
 	const dryRun = await api.apis.ReviveApi.call(
 		originSs58,
 		dest,
@@ -136,6 +161,7 @@ export async function reviveCall(params: ReviveCallParams) {
 		undefined, // gas_limit: let the runtime use the block max
 		undefined, // storage_deposit_limit: unbounded for the dry-run
 		data,
+		{ at: "best" },
 	);
 	if (!dryRun.result.success) {
 		const err = dryRun.result.value;
