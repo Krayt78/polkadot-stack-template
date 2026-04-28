@@ -1,6 +1,7 @@
 import { Outlet, Link, useLocation } from "react-router-dom";
 import { useChainStore } from "./store/chainStore";
 import { useConnectionManagement } from "./hooks/useConnection";
+import { ConnectQRModal } from "./components/ConnectQRModal";
 
 export default function App() {
 	const location = useLocation();
@@ -97,6 +98,9 @@ export default function App() {
 			<main className="relative z-10 max-w-5xl mx-auto px-4 py-8">
 				<Outlet />
 			</main>
+
+			{/* PWallet QR pairing modal — shows whenever sso.authenticate is in flight */}
+			<ConnectQRModal />
 		</div>
 	);
 }

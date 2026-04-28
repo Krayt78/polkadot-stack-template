@@ -13,6 +13,31 @@ import { uploadToBulletin, checkBulletinAuthorization } from "../hooks/useBullet
 import { submitToStatementStore, checkStatementStoreAvailable } from "../hooks/useStatementStore";
 import { getDevKeypair } from "../hooks/useAccount";
 import { useChainStore } from "../store/chainStore";
+import { reviveCall } from "../hooks/useReviveCall";
+import { formatDispatchError } from "../utils/format";
+import { useHostAccounts, type HostAccount } from "../hooks/useHostAccount";
+
+/**
+ * Resolve the substrate-signing identity for the Revive::call path.
+ *   - "dev:N" → the Nth hardcoded dev account (Alice/Bob/Charlie)
+ *   - "host:<ss58>" → a paired PWallet session
+ */
+function pickSubstrateSigner(
+	id: string,
+	hostAccounts: HostAccount[],
+): { address: string; signer: import("polkadot-api").PolkadotSigner } | null {
+	if (id.startsWith("dev:")) {
+		const idx = parseInt(id.slice(4), 10);
+		const dev = devAccounts[idx];
+		return dev ? { address: dev.address, signer: dev.signer } : null;
+	}
+	if (id.startsWith("host:")) {
+		const ss58 = id.slice(5);
+		const host = hostAccounts.find((a) => a.address === ss58);
+		return host ? { address: host.address, signer: host.signer } : null;
+	}
+	return null;
+}
 
 interface Props {
 	title: string;
@@ -58,6 +83,9 @@ export default function ContractProofOfExistencePage({
 	const [fileBytes, setFileBytes] = useState<Uint8Array | null>(null);
 	const [uploadToIpfs, setUploadToIpfs] = useState(false);
 	const [uploadToStatementStore, setUploadToStatementStore] = useState(false);
+	const [signWithSubstrate, setSignWithSubstrate] = useState(false);
+	const [substrateAccountId, setSubstrateAccountId] = useState<string>("dev:0");
+	const hostAccounts = useHostAccounts();
 	const [claims, setClaims] = useState<Claim[]>([]);
 	const [txStatus, setTxStatus] = useState<string | null>(null);
 	const [loading, setLoading] = useState(false);
@@ -205,20 +233,48 @@ export default function ContractProofOfExistencePage({
 			}
 
 			if (!uploadToIpfs && !uploadToStatementStore) {
-				setTxStatus("Submitting createClaim...");
+				setTxStatus(
+					signWithSubstrate
+						? "Submitting createClaim via Revive::call (substrate signer)..."
+						: "Submitting createClaim...",
+				);
 			}
 
-			const walletClient = await getWalletClient(selectedAccount, ethRpcUrl);
-			const hash = await walletClient.writeContract({
-				address: contractAddress as Address,
-				abi: proofOfExistenceAbi,
-				functionName: "createClaim",
-				args: [fileHash],
-			});
-			setTxStatus(`Transaction submitted: ${hash}`);
-			const publicClient = getPublicClient(ethRpcUrl);
-			await publicClient.waitForTransactionReceipt({ hash });
-			setTxStatus("Claim created!");
+			if (signWithSubstrate) {
+				const sub = pickSubstrateSigner(substrateAccountId, hostAccounts);
+				if (!sub) {
+					setTxStatus(
+						"Error: selected substrate account not available. Pair PWallet first or pick a dev account.",
+					);
+					return;
+				}
+				const { result } = await reviveCall({
+					wsUrl,
+					signer: sub.signer,
+					originSs58: sub.address,
+					contractAddress: contractAddress as Address,
+					abi: proofOfExistenceAbi,
+					functionName: "createClaim",
+					args: [fileHash],
+				});
+				if (!result.ok) {
+					setTxStatus(`Error: ${formatDispatchError(result.dispatchError)}`);
+					return;
+				}
+				setTxStatus(`Claim created! (extrinsic ${result.txHash})`);
+			} else {
+				const walletClient = await getWalletClient(selectedAccount, ethRpcUrl);
+				const hash = await walletClient.writeContract({
+					address: contractAddress as Address,
+					abi: proofOfExistenceAbi,
+					functionName: "createClaim",
+					args: [fileHash],
+				});
+				setTxStatus(`Transaction submitted: ${hash}`);
+				const publicClient = getPublicClient(ethRpcUrl);
+				await publicClient.waitForTransactionReceipt({ hash });
+				setTxStatus("Claim created!");
+			}
 			setFileHash(null);
 			setFileBytes(null);
 			loadClaims();
@@ -237,18 +293,44 @@ export default function ContractProofOfExistencePage({
 				setTxStatus(missingContractMessage());
 				return;
 			}
-			setTxStatus("Submitting revokeClaim...");
-			const walletClient = await getWalletClient(selectedAccount, ethRpcUrl);
-			const hash = await walletClient.writeContract({
-				address: contractAddress as Address,
-				abi: proofOfExistenceAbi,
-				functionName: "revokeClaim",
-				args: [documentHash],
-			});
-			setTxStatus(`Transaction submitted: ${hash}`);
-			const publicClient = getPublicClient(ethRpcUrl);
-			await publicClient.waitForTransactionReceipt({ hash });
-			setTxStatus("Claim revoked!");
+			setTxStatus(
+				signWithSubstrate
+					? "Submitting revokeClaim via Revive::call (substrate signer)..."
+					: "Submitting revokeClaim...",
+			);
+			if (signWithSubstrate) {
+				const sub = pickSubstrateSigner(substrateAccountId, hostAccounts);
+				if (!sub) {
+					setTxStatus("Error: selected substrate account not available.");
+					return;
+				}
+				const { result } = await reviveCall({
+					wsUrl,
+					signer: sub.signer,
+					originSs58: sub.address,
+					contractAddress: contractAddress as Address,
+					abi: proofOfExistenceAbi,
+					functionName: "revokeClaim",
+					args: [documentHash],
+				});
+				if (!result.ok) {
+					setTxStatus(`Error: ${formatDispatchError(result.dispatchError)}`);
+					return;
+				}
+				setTxStatus(`Claim revoked! (extrinsic ${result.txHash})`);
+			} else {
+				const walletClient = await getWalletClient(selectedAccount, ethRpcUrl);
+				const hash = await walletClient.writeContract({
+					address: contractAddress as Address,
+					abi: proofOfExistenceAbi,
+					functionName: "revokeClaim",
+					args: [documentHash],
+				});
+				setTxStatus(`Transaction submitted: ${hash}`);
+				const publicClient = getPublicClient(ethRpcUrl);
+				await publicClient.waitForTransactionReceipt({ hash });
+				setTxStatus("Claim revoked!");
+			}
 			loadClaims();
 		} catch (e) {
 			console.error("Transaction failed:", e);
@@ -313,6 +395,60 @@ export default function ContractProofOfExistencePage({
 					onStatementStoreToggle={setUploadToStatementStore}
 					statementStoreDisabled={statementStoreAvailable === false}
 				/>
+
+				<div className="rounded-lg border border-white/[0.04] bg-white/[0.02] p-3 space-y-3">
+					<label className="flex items-start gap-3 cursor-pointer">
+						<input
+							type="checkbox"
+							checked={signWithSubstrate}
+							onChange={(e) => setSignWithSubstrate(e.target.checked)}
+							className="mt-1"
+						/>
+						<div className="text-sm">
+							<div className="text-text-primary font-medium">
+								Sign via Revive::call (substrate signer)
+							</div>
+							<div className="text-text-tertiary text-xs">
+								Wraps the EVM call in a <code>pallet_revive::call</code> extrinsic and
+								signs with a substrate signer (dev account or paired PWallet).
+								<code>msg.sender</code> becomes the substrate account&apos;s revive-mapped
+								H160 — different from any EVM dev address.
+							</div>
+						</div>
+					</label>
+					{signWithSubstrate && (
+						<div>
+							<label className="label">Substrate signer</label>
+							<select
+								value={substrateAccountId}
+								onChange={(e) => setSubstrateAccountId(e.target.value)}
+								className="input-field w-full"
+							>
+								<optgroup label="Dev accounts">
+									{devAccounts.map((acc, i) => (
+										<option key={`dev:${i}`} value={`dev:${i}`}>
+											{acc.name} (dev sr25519)
+										</option>
+									))}
+								</optgroup>
+								{hostAccounts.length > 0 && (
+									<optgroup label="Paired PWallet sessions">
+										{hostAccounts.map((acc) => (
+											<option key={`host:${acc.address}`} value={`host:${acc.address}`}>
+												{acc.name} ({acc.address.slice(0, 8)}…{acc.address.slice(-6)})
+											</option>
+										))}
+									</optgroup>
+								)}
+							</select>
+							{hostAccounts.length === 0 && (
+								<p className="text-xs text-text-muted mt-1">
+									Pair a phone wallet on the Accounts page to add it here.
+								</p>
+							)}
+						</div>
+					)}
+				</div>
 
 				{fileHash && (
 					<div className="space-y-3">

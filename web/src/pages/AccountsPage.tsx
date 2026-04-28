@@ -12,6 +12,11 @@ import {
 } from "polkadot-api/pjs-signer";
 import { injectSpektrExtension, SpektrExtensionName } from "@novasamatech/product-sdk";
 import { getSs58AddressInfo, Keccak256 } from "@polkadot-api/substrate-bindings";
+import {
+	useHostAccounts,
+	startHostPairing,
+	disconnectHostSession,
+} from "../hooks/useHostAccount";
 
 type HostEnvironment = "desktop-webview" | "web-iframe" | "standalone";
 
@@ -112,11 +117,14 @@ export default function AccountsPage() {
 		type: "dev",
 	}));
 
+	const hostAccounts = useHostAccounts();
+
 	// All SS58 addresses to query
 	const allAddresses = [
 		...devAccounts.map((a) => a.address),
 		...extensionAccounts.map((a) => a.address),
 		...spektrAccounts.map((a) => a.address),
+		...hostAccounts.map((a) => a.address),
 	];
 
 	// Query balances and nonces
@@ -385,6 +393,57 @@ export default function AccountsPage() {
 								onFund={() => fundAccount(acc.address, acc.name || "Host account")}
 								connected={connected}
 							/>
+						))}
+					</div>
+				)}
+			</div>
+
+			{/* Phone wallet (PWallet) — out-of-process pairing via QR + Statement Store */}
+			<div className="card space-y-4">
+				<h2 className="section-title">Phone Wallet (PWallet)</h2>
+				<p className="text-sm text-text-secondary">
+					Pair a Polkadot mobile wallet by scanning a QR. Works without a host shell —
+					sessions persist across reloads.
+				</p>
+				{hostAccounts.length === 0 ? (
+					<button onClick={() => startHostPairing()} className="btn-primary">
+						Pair with PWallet (QR)
+					</button>
+				) : (
+					<div className="space-y-3">
+						<p className="text-sm text-accent-green font-medium">
+							Connected: {hostAccounts.length} account
+							{hostAccounts.length !== 1 ? "s" : ""}
+						</p>
+						{hostAccounts.map((acc) => (
+							<div key={acc.address} className="space-y-2">
+								<AccountCard
+									account={{
+										name: acc.name,
+										ss58: acc.address,
+										eth: ss58ToH160(acc.address),
+										type: "spektr",
+									}}
+									info={accountInfos[acc.address]}
+									badge={typeBadge.spektr}
+									onFund={() => fundAccount(acc.address, acc.name)}
+									connected={connected}
+								/>
+								<div className="flex gap-2">
+									<button
+										onClick={() => disconnectHostSession(acc)}
+										className="text-xs px-3 py-1 rounded-md bg-accent-red/10 text-accent-red hover:bg-accent-red/20"
+									>
+										Disconnect this session
+									</button>
+									<button
+										onClick={() => startHostPairing()}
+										className="text-xs px-3 py-1 rounded-md bg-white/[0.04] text-text-secondary hover:bg-white/[0.08]"
+									>
+										Pair another
+									</button>
+								</div>
+							</div>
 						))}
 					</div>
 				)}

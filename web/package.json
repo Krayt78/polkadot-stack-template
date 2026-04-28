@@ -20,8 +20,11 @@
     "preview": "vite preview"
   },
   "dependencies": {
+    "@novasamatech/host-papp": "0.6.18",
     "@novasamatech/product-sdk": "^0.6.12",
+    "@novasamatech/statement-store": "0.6.18",
     "@polkadot-api/descriptors": "file:.papi/descriptors",
+    "qrcode.react": "^4.2.0",
     "@polkadot-labs/hdkd": "^0.0.26",
     "@polkadot-labs/hdkd-helpers": "^0.0.27",
     "blakejs": "^1.2.1",
@@ -47,6 +50,8 @@
     "tailwindcss": "^3.4.15",
     "typescript": "~5.6.2",
     "typescript-eslint": "^8.58.1",
-    "vite": "^6.0.1"
+    "vite": "^6.0.1",
+    "vite-plugin-top-level-await": "^1.6.0",
+    "vite-plugin-wasm": "^3.6.0"
   }
 }
